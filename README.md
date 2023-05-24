@@ -1,1 +1,1 @@
-Collection of CFD codes
+Collection of CFD codes written using Python
