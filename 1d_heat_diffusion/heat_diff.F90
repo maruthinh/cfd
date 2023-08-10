@@ -1,5 +1,48 @@
 !To solve heat diffusion equation using FVM. AS described in Versteeg H and 
 !Malalasekra 
+
+!To set constant temperature boundary condition on both ends 
+subroutine bc_const_temp_both_sides(A, b, temp_l, temp_r, k, area, dx, Nx, q)
+#include <petsc/finclude/petsc.h>
+  use petsc 
+  implicit none
+ 
+  Mat, intent(inout) :: A
+  Vec, intent(inout) :: b
+  PetscInt, intent(in) :: Nx 
+  PetscReal, intent(in) :: temp_l, temp_r, k, area, dx, q
+  PetscReal val(2), ka_dx, sp, su, ae, aw, ap
+  PetscMPIInt rank, num_procs
+  PetscInt col_idx(2)
+  PetscErrorCode ierr 
+
+  call MPI_Comm_size(PETSC_COMM_WORLD, num_procs, ierr)
+  call MPI_Comm_rank(PETSC_COMM_WORLD, rank, ierr)
+  
+
+  !Bc on the left side of the domain 
+  ka_dx=k*area/dx
+  sp=-2.0*ka_dx
+  if(rank==0) then 
+    su=q*area*dx+2.0*ka_dx*temp_l 
+    aw=0.0; ae=ka_dx; ap=ae+aw-sp 
+    val(1)=ap; val(2)=-ae
+    col_idx(1)=0; col_idx(2)=1
+    call MatSetValues(A, 1, 0, 2, col_idx, val, INSERT_VALUES, ierr)
+    call VecSetValue(b, 0, su, INSERT_VALUES, ierr)
+  endif
+   
+  !BC on the right side of the domain  
+  if(rank==num_procs-1) then !right boundary 
+    su=q*area*dx+2.0*ka_dx*temp_r 
+    aw=ka_dx; ae=0.0; ap=ae+aw-sp 
+    val(1)=-aw; val(2)=ap
+    col_idx(1)=Nx-2; col_idx(2)=Nx-1
+    call MatSetValues(A, 1, Nx-1, 2, col_idx, val, INSERT_VALUES, ierr)
+    call VecSetValue(b, Nx-1, su, INSERT_VALUES, ierr)
+  endif
+end subroutine bc_const_temp_both_sides 
+
 program main
 
 #include <petsc/finclude/petsc.h>
@@ -9,28 +52,56 @@ program main
 
   PetscInt Nx, i, Istart, Iend, col_idx(3), rank, num_procs
   PetscErrorCode ierr 
-  PetscReal dx, xl, xr, start_time 
+  PetscReal dx, xl, xr, start_time, anal_term1, anal_term2 
   PetscReal, allocatable, dimension(:) :: grid
   PetscScalar, pointer :: soln(:)
-  PetscScalar k, ap, ae, aw, su, sp, area, ka_dx, Tlb, Trb, val(3), zero
+  PetscScalar k, ap, ae, aw, su, sp, area, ka_dx, Tlb, Trb, val(3), zero, q
   Vec x, b, u, vout
   Mat A
   KSP ksp 
   PC pc 
   PetscViewer viewer 
   VecScatter ctx
+  PetscBool flg 
 
-  !initialize petsc 
   call PetscInitialize(PETSC_NULL_CHARACTER,ierr)
+  
+  !Default simulation parameters (source term zero)
+  xl=0.0
+  xr=0.5
+  Nx=100 !total number of grid points 
+  k=1000.0 !thermal conductivity  (W/(m.k))
+  area=0.01 !(m^2)
+  Tlb = 100.0 !temperature on the left boundary Tlb.....Trb (k)
+  Trb = 500.0 !temperature on the right boundary (k)
+  q=0.0 ! heat flux (W/m^3) 
+  
+  !Default simulation parameters (with source term)
+ ! xl=0.0
+ ! xr=0.02
+ ! Nx=5 !total number of grid points 
+ ! k=0.5 !thermal conductivity  (W/(m.k))
+ ! area=1.0 !(m^2)
+ ! Tlb = 100.0 !temperature on the left boundary Tlb.....Trb (k)
+ ! Trb = 200.0 !temperature on the right boundary (k)
+ ! q=1.0e6 ! heat flux (W/m^3) 
+ 
+  !get command line inputs
+  call PetscOptionsGetInt(PETSC_NULL_OPTIONS, PETSC_NULL_CHARACTER, '-Nx', Nx, flg, ierr)
+  call PetscOptionsGetReal(PETSC_NULL_OPTIONS, PETSC_NULL_CHARACTER, '-xl', xl, flg, ierr)
+  call PetscOptionsGetReal(PETSC_NULL_OPTIONS, PETSC_NULL_CHARACTER, '-xr', xr, flg, ierr)
+  call PetscOptionsGetReal(PETSC_NULL_OPTIONS, PETSC_NULL_CHARACTER, '-k', k, flg, ierr)
+  call PetscOptionsGetReal(PETSC_NULL_OPTIONS, PETSC_NULL_CHARACTER, '-area', area, flg, ierr)
+  call PetscOptionsGetReal(PETSC_NULL_OPTIONS, PETSC_NULL_CHARACTER, '-Tl', Tlb, flg, ierr)
+  call PetscOptionsGetReal(PETSC_NULL_OPTIONS, PETSC_NULL_CHARACTER, '-Tr', Trb, flg, ierr)
+  call PetscOptionsGetReal(PETSC_NULL_OPTIONS, PETSC_NULL_CHARACTER, '-q', q, flg, ierr)
+  
+  !initialize petsc 
   call MPI_Comm_size(PETSC_COMM_WORLD, num_procs, ierr)
   call MPI_Comm_rank(PETSC_COMM_WORLD, rank, ierr)
 
-  Nx=100
   allocate(grid(Nx))
-  xl=0.0
-  xr=0.5
   dx=(xr-xl)/(Nx-1)
-  zero=0.0
 
   !generate grid
   do i=1,Nx
@@ -48,9 +119,6 @@ program main
   call VecDuplicate(x,b,ierr)
   call VecDuplicate(x,u,ierr)
  
-  !initialize rhs with 0
-  call VecSet(b, zero, ierr)
-
   !create a Matrix to store coefficients
   call MatCreate(PETSC_COMM_WORLD, A, ierr)
   call MatSetSizes(A, PETSC_DECIDE, PETSC_DECIDE, Nx, Nx, ierr)
@@ -60,17 +128,14 @@ program main
   !Get a global indices of rows of matrix for each processor
   call MatGetOwnershipRange(A, Istart, Iend, ierr)
 
-  !Thermal conductivity
-  k=1000.0
-  area=0.01
-
   !coefficients for the interior of the domain
   ka_dx = k*area/dx
+  sp = 0.0
   aw = ka_dx 
   ae = ka_dx 
-  ap = aw+ae
-
-  !Insert the coefficients in to the matrix 
+  ap = aw+ae-sp
+  
+  !Insert the coefficients in to the matrix for the interior of the domain
   val(1)=-aw; val(2)=ap; val(3)=-ae
   do i=Istart+1, Iend
     col_idx(1)=i-1; col_idx(2)=i; col_idx(3)=i+1
@@ -79,31 +144,14 @@ program main
     endif
   enddo
 
+  !initialize rhs with source term 
+  su = q*area*dx        
+  call VecSet(b, su, ierr)
+  
   !Boundary conditions. Set matrix coefficients and set boundary values for the 
   !rhs vector
-  !Bc on the left side of the domain 
-  Tlb=100
-  sp=-2.0*ka_dx
-  if(rank==0) then 
-    su=2.0*ka_dx*Tlb
-    aw=0.0; ae=ka_dx; ap=ae+aw-sp 
-    val(1)=ap; val(2)=-ae
-    col_idx(1)=0; col_idx(2)=1
-    call MatSetValues(A, 1, 0, 2, col_idx, val, INSERT_VALUES, ierr)
-    call VecSetValue(b, 0, su, INSERT_VALUES, ierr)
-  endif
-   
-  !BC on the right side of the domain  
-  Trb=500
-  if(rank==num_procs-1) then !right boundary 
-    su=2.0*ka_dx*Trb
-    aw=ka_dx; ae=0.0; ap=ae+aw-sp 
-    val(1)=-aw; val(2)=ap
-    col_idx(1)=Nx-2; col_idx(2)=Nx-1
-    call MatSetValues(A, 1, Nx-1, 2, col_idx, val, INSERT_VALUES, ierr)
-    call VecSetValue(b, Nx-1, su, INSERT_VALUES, ierr)
-  endif
-
+  call bc_const_temp_both_sides(A, b, Tlb, Trb, k, area, dx, Nx, q)
+ 
   !assemble matrix and rhs 
   call MatAssemblyBegin(A,MAT_FINAL_ASSEMBLY,ierr)
   call MatAssemblyEnd(A,MAT_FINAL_ASSEMBLY,ierr)
@@ -144,7 +192,7 @@ program main
   endif
   
   !To view solution, analytical soln and soln (on root rank) vectors 
-  ! call VecView(x, PETSC_ViEWER_STDOUT_WORLD, ierr)
+  !call VecView(x, PETSC_ViEWER_STDOUT_WORLD, ierr)
   ! call VecView(u, PETSC_ViEWER_STDOUT_WORLD, ierr)
   !if(rank==0) then
     ! call VecView(vout, PETSC_ViEWER_STDOUT_WORLD, ierr)
@@ -157,10 +205,11 @@ program main
     write(10, '(A1, A1, A6, A1, A10)') 'x', ',', 'result', ',', 'analytical'
 
     do i=1,Nx 
+      anal_term1 = (Trb-Tlb)/(xr-xl)
+      anal_term2 = (q/(2.0*k))*((xr-xl)-grid(i))
       write(10, '(ES12.4, A1, ES12.4, A1, ES12.4)') grid(i), ',', soln(i), ',', &
-        (grid(i)*((Trb-Tlb)/(xr-xl)))+Tlb
+        grid(i)*(anal_term1+anal_term2)+Tlb
     enddo
-
     close(unit=10)
   endif
 
