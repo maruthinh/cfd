@@ -1,3 +1,8 @@
 1d_heat_diffusion/compile_with_petsc.sh
 1d_heat_diffusion/.ipynb_checkpoints
 heat_diff
+heat_diff_c
+heat_diff_cu
+1d_heat_diffusion/compile_with_Newpetsc.sh
+1d_heat_diffusion/makefile
+
