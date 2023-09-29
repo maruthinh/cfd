@@ -52,7 +52,7 @@ program main
 
   PetscInt Nx, i, Istart, Iend, col_idx(3), rank, num_procs
   PetscErrorCode ierr 
-  PetscReal dx, xl, xr, start_time, anal_term1, anal_term2 
+  PetscReal dx, xl, xr, start_time, anal_term1, anal_term2, start_tot_time 
   PetscReal, allocatable, dimension(:) :: grid
   PetscScalar, pointer :: soln(:)
   PetscScalar k, ap, ae, aw, su, sp, area, ka_dx, Tlb, Trb, val(3), zero, q
@@ -66,6 +66,8 @@ program main
 
   call PetscInitialize(PETSC_NULL_CHARACTER,ierr)
   
+  start_tot_time = MPI_WTime()
+
   !Default simulation parameters (source term zero)
   xl=0.0
   xr=0.5
@@ -112,7 +114,6 @@ program main
   !  print*, grid
   !endif 
   
-  start_time = MPI_WTime()
   !create solution vector, rhs and vector to store analytical soln
   call VecCreateMPI(PETSC_COMM_WORLD, PETSC_DECIDE, NX, x, ierr)
   call VecSetFromOptions(x, ierr)
@@ -167,14 +168,19 @@ program main
   !T=c1*x+c2, c1=(Trb-Tlb)/(xr-xl), c2=Tlb
   call VecGetOwnershipRange(u, Istart, Iend, ierr)
   do i=Istart, Iend-1
-    call VecSetValue(u, i, (grid(i+1)*((Trb-Tlb)/(xr-xl)))+Tlb, ierr)
+    anal_term1 = (Trb-Tlb)/(xr-xl)
+    anal_term2 = (q/(2.0*k))*((xr-xl)-grid(i+1))  
+    call VecSetValue(u, i, grid(i+1)*(anal_term1+anal_term2)+Tlb, INSERT_VALUES, ierr)
   enddo
 
   !create linear solver context
   call KSPCreate(PETSC_COMM_WORLD, ksp, ierr) 
   call KSPSetOperators(ksp, A, A, ierr)
   call KSPSetFromOptions(ksp, ierr)
+  
+  start_time = MPI_WTime()
   call KSPSolve(ksp, b, x, ierr)
+  print*, "Total time taken for KSP solve: rank: ", rank, MPI_WTime()-start_time
 
   !assemble solution matrix 
   call VecAssemblyBegin(x, ierr)
@@ -221,9 +227,11 @@ program main
   call VecDestroy(x, ierr)
   call VecDestroy(vout, ierr)
   call VecScatterDestroy(ctx, ierr)
-
-  print*, "Total time taken for matrix and vector creation as well as KSP &
-    solve: ", MPI_WTime()-start_time
-
+  
+  if(rank==0) then
+    print*, "Total time taken for matrix and vector creation as well as KSP &
+    solve: ", MPI_WTime()-start_tot_time
+endif
+  
   call PetscFinalize(ierr)
 end program main 
