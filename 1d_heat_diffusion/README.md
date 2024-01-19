@@ -9,7 +9,7 @@ Solves 1D heat diffusion equation with and without source term (by default)
  
 **How to compile and run the code** 
 
- 1. Need Fortran compiler and PETSc library 
+ 1. Need PETSc library compiled with Fortran to compile and run Fortran code and PETSc library compiled with CUDA to compile and run CUDA version
  2. to run the executable without source term (heat flux)
     
     `mpiexec.hydra -n 2 ./heat_diff -pc_type gamg`
